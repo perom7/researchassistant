@@ -62,11 +62,15 @@ def generate_podcast_script(
     return PodcastScript(host_lines=host[:exchanges], expert_lines=expert[:exchanges])
 
 
-def podcast_script_to_text(script: PodcastScript) -> str:
+def podcast_script_to_text(script: PodcastScript, *, include_speaker_labels: bool = True) -> str:
     lines: List[str] = []
     for h, e in zip(script.host_lines, script.expert_lines):
-        lines.append(f"Host: {h}")
-        lines.append(f"Expert: {e}")
+        if include_speaker_labels:
+            lines.append(f"Host: {h}")
+            lines.append(f"Expert: {e}")
+        else:
+            lines.append(h)
+            lines.append(e)
         lines.append("")
     return "\n".join(lines).strip()
 

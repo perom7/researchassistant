@@ -15,6 +15,7 @@ from .text_utils import clean_text
 from .section_summarize import summarize_by_sections
 from .tts import synthesize_to_wav, concat_wavs
 from .ppt import create_ppt_from_summary
+from .gemini_llm import GeminiConfig, generate_text, safe_strip
 
 
 @dataclass
@@ -24,7 +25,7 @@ class PipelineOptions:
     summary_sentences: int = 10
     ppt_theme: str = "professional"
 
-    summarizer: Literal["tfidf", "textrank"] = "tfidf"
+    summarizer: Literal["tfidf", "textrank", "gemini"] = "tfidf"
     sentence_segmentation: Literal["regex", "spacy"] = "regex"
     keyword_algorithm: Literal["freq", "rake"] = "freq"
     min_keyword_freq: int = 2
@@ -40,6 +41,10 @@ class PipelineOptions:
     section_aware: bool = True
     max_sentences_per_section: int = 3
     include_references: bool = False
+
+    # LLM (optional)
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-1.5-flash"
 
 
 @dataclass
@@ -91,6 +96,8 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
             sentence_segmentation=opts.sentence_segmentation,
             max_sentences_per_section=opts.max_sentences_per_section,
             include_references=opts.include_references,
+            gemini_api_key=opts.gemini_api_key,
+            gemini_model=opts.gemini_model,
         )
         summary = sec.summary
         summary_debug = sec.summarizer_debug
@@ -104,6 +111,8 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
             sentence_segmentation=opts.sentence_segmentation,
             max_sentences_per_section=None,
             include_references=True,
+            gemini_api_key=opts.gemini_api_key,
+            gemini_model=opts.gemini_model,
         )
         summary = sec.summary
         summary_debug = {**sec.summarizer_debug, "mode": "whole"}
@@ -119,7 +128,39 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
     elif opts.target_reading_grade is not None and opts.target_reading_grade <= 10:
         aggressiveness = 2
 
-    simplified = simplify_text(summary, aggressiveness=aggressiveness)
+    if opts.summarizer == "gemini":
+        if not (opts.gemini_api_key or "").strip():
+            raise ValueError("Gemini API key is required when summarizer='gemini'.")
+
+        grade_hint = ""
+        if opts.target_reading_grade is not None:
+            grade_hint = f"Target reading level: grade {opts.target_reading_grade:.1f}.\n"
+
+        prompt = (
+            "Rewrite the following summary in simpler, clearer English.\n"
+            + grade_hint
+            + "Rules:\n"
+            "- Plain text only\n"
+            "- Keep all key facts\n"
+            "- Short sentences, minimal jargon\n"
+            "- Do not add new information\n\n"
+            "SUMMARY:\n"
+            + summary
+        )
+
+        simplified = safe_strip(
+            generate_text(
+                prompt,
+                config=GeminiConfig(
+                    api_key=opts.gemini_api_key,
+                    model=opts.gemini_model,
+                    temperature=0.25,
+                    max_output_tokens=900,
+                ),
+            )
+        )
+    else:
+        simplified = simplify_text(summary, aggressiveness=aggressiveness)
     simplified_path = out_dir / "simplified.txt"
     simplified_path.write_text(simplified, encoding="utf-8")
 
@@ -133,12 +174,62 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
     if opts.podcast_target_minutes is not None:
         exchanges = 10
 
-    podcast_script = generate_podcast_script(
-        summary=summary,
-        keywords=keywords_only,
-        keyphrases=keywords_only[:10],
-        exchanges=exchanges,
-    )
+    if opts.summarizer == "gemini":
+        prompt = (
+            "Create a natural conversation between a host and a guest expert about this research summary.\n"
+            f"Write {int(exchanges)} back-and-forth exchanges.\n"
+            "Rules:\n"
+            "- Do NOT write 'Host:' or 'Expert:' or any speaker labels in the spoken text.\n"
+            "- Each turn should be 1-2 sentences.\n"
+            "- Keep it factual and faithful to the summary.\n"
+            "- Avoid repeating the same opener every turn.\n"
+            "Output format MUST be exactly:\n"
+            "H: <line>\n"
+            "E: <line>\n"
+            "(repeat)\n\n"
+            "SUMMARY:\n"
+            + summary
+        )
+
+        raw_dialogue = safe_strip(
+            generate_text(
+                prompt,
+                config=GeminiConfig(
+                    api_key=opts.gemini_api_key or "",
+                    model=opts.gemini_model,
+                    temperature=0.35,
+                    max_output_tokens=1200,
+                ),
+            )
+        )
+
+        host_lines = []
+        expert_lines = []
+        for line in raw_dialogue.splitlines():
+            line = line.strip()
+            if line.startswith("H:"):
+                host_lines.append(line[2:].strip())
+            elif line.startswith("E:"):
+                expert_lines.append(line[2:].strip())
+        # Fallback to rule-based if parsing fails
+        if len(host_lines) < 3 or len(expert_lines) < 3:
+            podcast_script = generate_podcast_script(
+                summary=summary,
+                keywords=keywords_only,
+                keyphrases=keywords_only[:10],
+                exchanges=exchanges,
+            )
+        else:
+            from .scripts import PodcastScript
+
+            podcast_script = PodcastScript(host_lines=host_lines[:exchanges], expert_lines=expert_lines[:exchanges])
+    else:
+        podcast_script = generate_podcast_script(
+            summary=summary,
+            keywords=keywords_only,
+            keyphrases=keywords_only[:10],
+            exchanges=exchanges,
+        )
 
     podcast_initial_exchanges = len(podcast_script.host_lines)
 
@@ -147,7 +238,7 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
         target_words = int(opts.podcast_target_minutes * opts.speech_wpm)
         # iteratively reduce until under target
         while True:
-            podcast_text_tmp = podcast_script_to_text(podcast_script)
+            podcast_text_tmp = podcast_script_to_text(podcast_script, include_speaker_labels=False)
             wc = len(podcast_text_tmp.split())
             if wc <= target_words or len(podcast_script.host_lines) <= 3:
                 break
@@ -155,9 +246,10 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
                 host_lines=podcast_script.host_lines[:-1],
                 expert_lines=podcast_script.expert_lines[:-1],
             )
-    podcast_text = podcast_script_to_text(podcast_script)
+    podcast_text = podcast_script_to_text(podcast_script, include_speaker_labels=True)
+    podcast_text_for_audio = podcast_script_to_text(podcast_script, include_speaker_labels=False)
     podcast_final_exchanges = len(podcast_script.host_lines)
-    podcast_words = len(podcast_text.split())
+    podcast_words = len(podcast_text_for_audio.split())
     podcast_estimated_minutes = (podcast_words / opts.speech_wpm) if opts.speech_wpm else None
     podcast_script_path = out_dir / "podcast_script.txt"
     podcast_script_path.write_text(podcast_text, encoding="utf-8")
@@ -168,15 +260,16 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
 
     wavs = []
     for i, (h, e) in enumerate(zip(podcast_script.host_lines, podcast_script.expert_lines)):
-        wavs.append(synthesize_to_wav(f"Host. {h}", audio_dir / f"host_{i}.wav", voice_name_contains="zira", rate=190))
-        wavs.append(synthesize_to_wav(f"Expert. {e}", audio_dir / f"expert_{i}.wav", voice_name_contains="david", rate=175))
+        # Do NOT say the words "Host"/"Expert" in audio; rely on different voices for separation.
+        wavs.append(synthesize_to_wav(h, audio_dir / f"host_{i}.wav", voice_name_contains="zira", rate=190))
+        wavs.append(synthesize_to_wav(e, audio_dir / f"expert_{i}.wav", voice_name_contains="david", rate=175))
 
     podcast_audio_path = out_dir / "podcast.wav"
     try:
         concat_wavs(wavs, podcast_audio_path, silence_ms=650)
     except Exception:
         # If concat fails, create a single narration
-        synthesize_to_wav(podcast_text, podcast_audio_path, rate=180)
+        synthesize_to_wav(podcast_text_for_audio, podcast_audio_path, rate=180)
 
     # 7) PPT
     pptx_path = out_dir / "presentation.pptx"
@@ -190,7 +283,27 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
     )
 
     # 8) Video script
-    video_script = generate_video_script(summary, kind="reel")
+    if opts.summarizer == "gemini":
+        prompt = (
+            "Write a short video script for a 30-45 second reel about this research summary.\n"
+            "Format with these headings exactly: Hook:, Problem:, Simple idea:, Impact:, Call to action:\n"
+            "Plain text only. No markdown. No emojis.\n\n"
+            "SUMMARY:\n"
+            + summary
+        )
+        video_script = safe_strip(
+            generate_text(
+                prompt,
+                config=GeminiConfig(
+                    api_key=opts.gemini_api_key or "",
+                    model=opts.gemini_model,
+                    temperature=0.35,
+                    max_output_tokens=500,
+                ),
+            )
+        )
+    else:
+        video_script = generate_video_script(summary, kind="reel")
     video_script_path = out_dir / "video_script.txt"
     video_script_path.write_text(video_script, encoding="utf-8")
 

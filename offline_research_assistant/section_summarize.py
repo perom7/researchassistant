@@ -9,9 +9,10 @@ from .sections import split_into_sections
 from .text_utils import split_sentences, tokenize_words
 from .textrank import summarize_textrank
 from .tfidf_debug import summarize_tfidf_debug
+from .gemini_llm import GeminiConfig, generate_text, safe_strip
 
 
-SummarizerAlgo = Literal["tfidf", "textrank"]
+SummarizerAlgo = Literal["tfidf", "textrank", "gemini"]
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,8 @@ def summarize_by_sections(
     sentence_segmentation: Literal["regex", "spacy"] = "regex",
     max_sentences_per_section: Optional[int] = None,
     include_references: bool = False,
+    gemini_api_key: str | None = None,
+    gemini_model: str = "gemini-1.5-flash",
 ) -> SectionSummarizationResult:
     split = split_into_sections(text)
 
@@ -123,7 +126,49 @@ def summarize_by_sections(
 
         k = alloc.get(name, 1)
 
-        if summarizer == "textrank":
+        if summarizer == "gemini":
+            if not (gemini_api_key or "").strip():
+                raise ValueError("Gemini API key is required when summarizer='gemini'.")
+
+            prompt = (
+                "You are summarizing one section of a research paper for a presentation.\n"
+                "Write exactly "
+                + str(int(k))
+                + " concise sentences.\n"
+                "Rules:\n"
+                "- Plain text only\n"
+                "- No bullet symbols, no numbering\n"
+                "- No citations like [1] or (Smith, 2020)\n"
+                "- Keep the meaning faithful to the text\n\n"
+                f"SECTION NAME: {name}\n\n"
+                "SECTION TEXT:\n"
+                + sec_text
+            )
+
+            sec_summary = safe_strip(
+                generate_text(
+                    prompt,
+                    config=GeminiConfig(
+                        api_key=gemini_api_key,
+                        model=gemini_model,
+                        temperature=0.3,
+                        max_output_tokens=max(256, int(k) * 90),
+                    ),
+                )
+            )
+
+            summaries.append(
+                SectionSummary(
+                    section=name,
+                    words=len(tokenize_words(sec_text)),
+                    allocated_sentences=k,
+                    summary=sec_summary,
+                    selected_indices=[],
+                    top_terms=None,
+                )
+            )
+
+        elif summarizer == "textrank":
             tr = summarize_textrank(sec_text, max_sentences=k)
             sec_sents = split_sentences(sec_text)
 
@@ -183,6 +228,11 @@ def summarize_by_sections(
         "total_sentences": int(total_sentences),
         "max_sentences_per_section": max_sentences_per_section,
         "include_references": include_references,
+        "llm": (
+            {"provider": "gemini", "model": gemini_model, "temperature": 0.3}
+            if summarizer == "gemini"
+            else None
+        ),
         "top_terms": (
             [{"term": t, "score": sc} for t, sc in sorted(overall_terms.items(), key=lambda x: x[1], reverse=True)[:20]]
             if summarizer == "tfidf" and overall_terms

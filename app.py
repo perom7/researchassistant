@@ -12,10 +12,10 @@ from offline_research_assistant.pipeline import run_pipeline, PipelineOptions
 from offline_research_assistant.video import overlay_audio_on_video
 
 
-st.set_page_config(page_title="Offline Research Assistant", layout="wide")
+st.set_page_config(page_title="Research Assistant", layout="wide")
 
-st.title("Offline Research Assistant")
-st.write("No API keys. Runs locally.")
+st.title("Research Assistant")
+st.write("Runs locally. Optional Gemini backend for higher-quality outputs.")
 
 with st.sidebar:
     st.header("Options")
@@ -26,10 +26,18 @@ with st.sidebar:
 
     st.divider()
     st.subheader("NLP")
-    summarizer = st.selectbox("Summarizer", ["tfidf", "textrank"], index=0)
+    summarizer = st.selectbox("Summarizer", ["tfidf", "textrank", "gemini"], index=0)
     sentence_segmentation = st.selectbox("Sentence segmentation (TF-IDF)", ["regex", "spacy"], index=0)
     keyword_algorithm = st.selectbox("Keyword extraction", ["freq", "rake"], index=0)
     min_keyword_freq = st.number_input("Min keyword frequency (freq mode)", min_value=1, max_value=20, value=2, step=1)
+
+    gemini_api_key = None
+    gemini_model = "gemini-1.5-flash"
+    if summarizer == "gemini":
+        st.divider()
+        st.subheader("Gemini")
+        gemini_api_key = st.text_input("Gemini API key", type="password", help="Used only for this run; not saved.")
+        gemini_model = st.selectbox("Gemini model", ["gemini-1.5-flash", "gemini-1.5-pro"], index=0)
 
     st.divider()
     st.subheader("Robustness")
@@ -83,6 +91,8 @@ with st.status("Processing…", expanded=True) as status:
             section_aware=bool(section_aware),
             max_sentences_per_section=int(max_sentences_per_section),
             include_references=bool(include_references),
+            gemini_api_key=(gemini_api_key or None),
+            gemini_model=str(gemini_model),
         )
 
         out_dir = tmp_path / "outputs"
