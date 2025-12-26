@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs (generated)
+outputs/
+smoke_outputs/
+audio/
+
+# Media artifacts (generated)
+*.wav
+*.mp3
+*.mp4
+
+# Slides (generated)
+*.pptx
+
+# Logs
+*.log
+
+# Documents (usually inputs)
+*.pdf
