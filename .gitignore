@@ -33,3 +33,5 @@ audio/
 
 # Documents (usually inputs)
 *.pdf
+smoke_outputs_local/
+smoke_outputs*/

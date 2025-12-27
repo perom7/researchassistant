@@ -51,19 +51,74 @@ def summarize_tfidf_debug(text: str, max_sentences: int = 10, segmentation: str 
     top_terms = [(t, float(v)) for t, v in agg.most_common(20)]
 
     scores = []
+    vectors: List[dict[str, float]] = []
     for i, words in enumerate(sent_tokens):
         if not words:
             scores.append((i, 0.0))
+            vectors.append({})
             continue
         tf = Counter(words)
         score = 0.0
+        vec: dict[str, float] = {}
         for t, c in tf.items():
-            score += (c / len(words)) * idf(t)
+            w = (c / len(words)) * idf(t)
+            score += w
+            vec[t] = w
         score /= (1.0 + abs(len(sents[i]) - 160) / 160.0)
-        scores.append((i, score))
 
-    top = sorted(scores, key=lambda x: x[1], reverse=True)[:max_sentences]
-    keep = sorted(i for i, _ in top)
+        # Mild position bias: earlier sentences often carry definitions/context.
+        # Keep it small to avoid washing out relevance.
+        pos_boost = 1.0 + (0.12 * (1.0 - (i / max(1, n - 1))))
+        score *= pos_boost
+
+        scores.append((i, score))
+        vectors.append(vec)
+
+    def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+        if not a or not b:
+            return 0.0
+        if len(a) > len(b):
+            a, b = b, a
+        dot = 0.0
+        for k, av in a.items():
+            bv = b.get(k)
+            if bv is not None:
+                dot += av * bv
+        na = sum(v * v for v in a.values())
+        nb = sum(v * v for v in b.values())
+        if na <= 0.0 or nb <= 0.0:
+            return 0.0
+        return dot / ((na ** 0.5) * (nb ** 0.5))
+
+    # Select sentences with Maximal Marginal Relevance to reduce redundancy.
+    # MMR score = λ * relevance - (1-λ) * max_similarity(selected)
+    lam = 0.78
+    base = {i: sc for i, sc in scores}
+    selected: List[int] = []
+    candidates = set(range(n))
+
+    # seed with best base score
+    seed = max(base.items(), key=lambda x: x[1])[0]
+    selected.append(seed)
+    candidates.remove(seed)
+
+    while len(selected) < max_sentences and candidates:
+        best_i = None
+        best_score = -1e18
+        for i in list(candidates):
+            sim = 0.0
+            for j in selected:
+                sim = max(sim, _cosine(vectors[i], vectors[j]))
+            mmr = (lam * base[i]) - ((1.0 - lam) * sim)
+            if mmr > best_score:
+                best_score = mmr
+                best_i = i
+        if best_i is None:
+            break
+        selected.append(best_i)
+        candidates.remove(best_i)
+
+    keep = sorted(selected)
 
     summary = " ".join(sents[i] for i in keep)
 

@@ -15,29 +15,21 @@ from offline_research_assistant.video import overlay_audio_on_video
 st.set_page_config(page_title="Research Assistant", layout="wide")
 
 st.title("Research Assistant")
-st.write("Runs locally. Optional Gemini backend for higher-quality outputs.")
+st.write("Runs locally. No API keys required.")
 
 with st.sidebar:
     st.header("Options")
-    summary_sentences = st.slider("Summary length (sentences)", 5, 20, 10, 1)
+    summary_sentences = st.slider("Summary length (sentences)", 5, 60, 18, 1)
     ocr_fallback = st.checkbox("Use OCR fallback (slower)", value=False)
     ppt_theme = st.selectbox("PPT theme", ["professional", "modern", "creative"], index=0)
     max_pages = st.number_input("Max pages (0 = all)", min_value=0, max_value=500, value=0, step=1)
 
     st.divider()
     st.subheader("NLP")
-    summarizer = st.selectbox("Summarizer", ["tfidf", "textrank", "gemini"], index=0)
+    summarizer = st.selectbox("Summarizer", ["tfidf", "textrank"], index=0)
     sentence_segmentation = st.selectbox("Sentence segmentation (TF-IDF)", ["regex", "spacy"], index=0)
     keyword_algorithm = st.selectbox("Keyword extraction", ["freq", "rake"], index=0)
     min_keyword_freq = st.number_input("Min keyword frequency (freq mode)", min_value=1, max_value=20, value=2, step=1)
-
-    gemini_api_key = None
-    gemini_model = "gemini-1.5-flash"
-    if summarizer == "gemini":
-        st.divider()
-        st.subheader("Gemini")
-        gemini_api_key = st.text_input("Gemini API key", type="password", help="Used only for this run; not saved.")
-        gemini_model = st.selectbox("Gemini model", ["gemini-1.5-flash", "gemini-1.5-pro"], index=0)
 
     st.divider()
     st.subheader("Robustness")
@@ -48,12 +40,12 @@ with st.sidebar:
     st.divider()
     st.subheader("Constraints")
     target_reading_grade = st.number_input("Target reading grade (0 = off)", min_value=0.0, max_value=20.0, value=0.0, step=0.5)
-    podcast_target_minutes = st.number_input("Podcast target minutes (0 = off)", min_value=0.0, max_value=60.0, value=0.0, step=0.5)
+    podcast_target_minutes = st.number_input("Podcast target minutes (0 = off)", min_value=0.0, max_value=120.0, value=0.0, step=0.5)
 
     st.divider()
     st.subheader("Structure")
     section_aware = st.checkbox("Section-aware summarization", value=True)
-    max_sentences_per_section = st.slider("Max sentences per section", 1, 8, 3, 1)
+    max_sentences_per_section = st.slider("Max sentences per section", 1, 15, 6, 1)
     include_references = st.checkbox("Include References section", value=False)
 
 pdf_file = st.file_uploader("Upload a research paper PDF", type=["pdf"])
@@ -91,12 +83,19 @@ with st.status("Processing…", expanded=True) as status:
             section_aware=bool(section_aware),
             max_sentences_per_section=int(max_sentences_per_section),
             include_references=bool(include_references),
-            gemini_api_key=(gemini_api_key or None),
-            gemini_model=str(gemini_model),
         )
 
         out_dir = tmp_path / "outputs"
-        outputs = run_pipeline(in_pdf, out_dir, opts=opts)
+        try:
+            outputs = run_pipeline(in_pdf, out_dir, opts=opts)
+        except ValueError as e:
+            status.update(label="Failed", state="error", expanded=True)
+            st.error(str(e))
+            st.stop()
+        except Exception as e:
+            status.update(label="Failed", state="error", expanded=True)
+            st.error(f"Unexpected error: {e}")
+            st.stop()
 
         status.write("Preparing downloads…")
 

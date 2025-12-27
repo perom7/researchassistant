@@ -15,7 +15,6 @@ from .text_utils import clean_text
 from .section_summarize import summarize_by_sections
 from .tts import synthesize_to_wav, concat_wavs
 from .ppt import create_ppt_from_summary
-from .gemini_llm import GeminiConfig, generate_text, safe_strip
 
 
 @dataclass
@@ -25,7 +24,7 @@ class PipelineOptions:
     summary_sentences: int = 10
     ppt_theme: str = "professional"
 
-    summarizer: Literal["tfidf", "textrank", "gemini"] = "tfidf"
+    summarizer: Literal["tfidf", "textrank"] = "tfidf"
     sentence_segmentation: Literal["regex", "spacy"] = "regex"
     keyword_algorithm: Literal["freq", "rake"] = "freq"
     min_keyword_freq: int = 2
@@ -41,10 +40,6 @@ class PipelineOptions:
     section_aware: bool = True
     max_sentences_per_section: int = 3
     include_references: bool = False
-
-    # LLM (optional)
-    gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-1.5-flash"
 
 
 @dataclass
@@ -96,8 +91,6 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
             sentence_segmentation=opts.sentence_segmentation,
             max_sentences_per_section=opts.max_sentences_per_section,
             include_references=opts.include_references,
-            gemini_api_key=opts.gemini_api_key,
-            gemini_model=opts.gemini_model,
         )
         summary = sec.summary
         summary_debug = sec.summarizer_debug
@@ -111,8 +104,6 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
             sentence_segmentation=opts.sentence_segmentation,
             max_sentences_per_section=None,
             include_references=True,
-            gemini_api_key=opts.gemini_api_key,
-            gemini_model=opts.gemini_model,
         )
         summary = sec.summary
         summary_debug = {**sec.summarizer_debug, "mode": "whole"}
@@ -128,39 +119,7 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
     elif opts.target_reading_grade is not None and opts.target_reading_grade <= 10:
         aggressiveness = 2
 
-    if opts.summarizer == "gemini":
-        if not (opts.gemini_api_key or "").strip():
-            raise ValueError("Gemini API key is required when summarizer='gemini'.")
-
-        grade_hint = ""
-        if opts.target_reading_grade is not None:
-            grade_hint = f"Target reading level: grade {opts.target_reading_grade:.1f}.\n"
-
-        prompt = (
-            "Rewrite the following summary in simpler, clearer English.\n"
-            + grade_hint
-            + "Rules:\n"
-            "- Plain text only\n"
-            "- Keep all key facts\n"
-            "- Short sentences, minimal jargon\n"
-            "- Do not add new information\n\n"
-            "SUMMARY:\n"
-            + summary
-        )
-
-        simplified = safe_strip(
-            generate_text(
-                prompt,
-                config=GeminiConfig(
-                    api_key=opts.gemini_api_key,
-                    model=opts.gemini_model,
-                    temperature=0.25,
-                    max_output_tokens=900,
-                ),
-            )
-        )
-    else:
-        simplified = simplify_text(summary, aggressiveness=aggressiveness)
+    simplified = simplify_text(summary, aggressiveness=aggressiveness)
     simplified_path = out_dir / "simplified.txt"
     simplified_path.write_text(simplified, encoding="utf-8")
 
@@ -168,75 +127,26 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
     kw_bundle = keyword_sets(text, algo=opts.keyword_algorithm, top_k=15, min_freq=opts.min_keyword_freq)
     keywords_only = [k["term"] for k in kw_bundle["keywords"]]
 
-    # 5) Scripts
-    # Generate up to 10 exchanges and optionally truncate to match target duration.
+    # 5) Scripts (fully offline)
     exchanges = 10
-    if opts.podcast_target_minutes is not None:
-        exchanges = 10
+    if opts.podcast_target_minutes is not None and opts.podcast_target_minutes > 0:
+        target_words = int(opts.podcast_target_minutes * opts.speech_wpm)
+        # Rough heuristic: ~70 spoken words per exchange (host+expert)
+        exchanges = max(6, min(40, int((target_words + 69) // 70)))
 
-    if opts.summarizer == "gemini":
-        prompt = (
-            "Create a natural conversation between a host and a guest expert about this research summary.\n"
-            f"Write {int(exchanges)} back-and-forth exchanges.\n"
-            "Rules:\n"
-            "- Do NOT write 'Host:' or 'Expert:' or any speaker labels in the spoken text.\n"
-            "- Each turn should be 1-2 sentences.\n"
-            "- Keep it factual and faithful to the summary.\n"
-            "- Avoid repeating the same opener every turn.\n"
-            "Output format MUST be exactly:\n"
-            "H: <line>\n"
-            "E: <line>\n"
-            "(repeat)\n\n"
-            "SUMMARY:\n"
-            + summary
-        )
-
-        raw_dialogue = safe_strip(
-            generate_text(
-                prompt,
-                config=GeminiConfig(
-                    api_key=opts.gemini_api_key or "",
-                    model=opts.gemini_model,
-                    temperature=0.35,
-                    max_output_tokens=1200,
-                ),
-            )
-        )
-
-        host_lines = []
-        expert_lines = []
-        for line in raw_dialogue.splitlines():
-            line = line.strip()
-            if line.startswith("H:"):
-                host_lines.append(line[2:].strip())
-            elif line.startswith("E:"):
-                expert_lines.append(line[2:].strip())
-        # Fallback to rule-based if parsing fails
-        if len(host_lines) < 3 or len(expert_lines) < 3:
-            podcast_script = generate_podcast_script(
-                summary=summary,
-                keywords=keywords_only,
-                keyphrases=keywords_only[:10],
-                exchanges=exchanges,
-            )
-        else:
-            from .scripts import PodcastScript
-
-            podcast_script = PodcastScript(host_lines=host_lines[:exchanges], expert_lines=expert_lines[:exchanges])
-    else:
-        podcast_script = generate_podcast_script(
-            summary=summary,
-            keywords=keywords_only,
-            keyphrases=keywords_only[:10],
-            exchanges=exchanges,
-        )
+    podcast_script = generate_podcast_script(
+        summary=summary,
+        keywords=keywords_only,
+        keyphrases=keywords_only[:10],
+        exchanges=exchanges,
+    )
 
     podcast_initial_exchanges = len(podcast_script.host_lines)
 
-    # Enforce podcast duration target (best-effort) by truncating exchanges
+    # Enforce podcast duration target (best-effort): if over target, truncate;
+    # if under target, we already scaled exchanges up above.
     if opts.podcast_target_minutes is not None:
         target_words = int(opts.podcast_target_minutes * opts.speech_wpm)
-        # iteratively reduce until under target
         while True:
             podcast_text_tmp = podcast_script_to_text(podcast_script, include_speaker_labels=False)
             wc = len(podcast_text_tmp.split())
@@ -282,28 +192,8 @@ def run_pipeline(pdf_path: str | Path, out_dir: str | Path, opts: PipelineOption
         keywords=keywords_only[:12],
     )
 
-    # 8) Video script
-    if opts.summarizer == "gemini":
-        prompt = (
-            "Write a short video script for a 30-45 second reel about this research summary.\n"
-            "Format with these headings exactly: Hook:, Problem:, Simple idea:, Impact:, Call to action:\n"
-            "Plain text only. No markdown. No emojis.\n\n"
-            "SUMMARY:\n"
-            + summary
-        )
-        video_script = safe_strip(
-            generate_text(
-                prompt,
-                config=GeminiConfig(
-                    api_key=opts.gemini_api_key or "",
-                    model=opts.gemini_model,
-                    temperature=0.35,
-                    max_output_tokens=500,
-                ),
-            )
-        )
-    else:
-        video_script = generate_video_script(summary, kind="reel")
+    # 8) Video script (offline)
+    video_script = generate_video_script(summary, kind="reel")
     video_script_path = out_dir / "video_script.txt"
     video_script_path.write_text(video_script, encoding="utf-8")
 

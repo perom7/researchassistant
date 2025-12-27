@@ -1,9 +1,9 @@
-"""Research Assistant (offline-first; optional Gemini backend).
+"""Research Assistant (offline-first).
 
 This package provides:
 - PDF text extraction (+ optional OCR fallback)
 - Offline summarization + keyword extraction
-- Optional Gemini-powered summarization/simplification/scripts
+- Summarization + keyword extraction
 - Script generation (podcast + video)
 - Offline TTS via pyttsx3 (Windows SAPI5)
 - PPT generation via python-pptx
