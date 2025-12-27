@@ -66,10 +66,13 @@ def summarize_tfidf_debug(text: str, max_sentences: int = 10, segmentation: str 
             vec[t] = w
         score /= (1.0 + abs(len(sents[i]) - 160) / 160.0)
 
-        # Mild position bias: earlier sentences often carry definitions/context.
-        # Keep it small to avoid washing out relevance.
-        pos_boost = 1.0 + (0.12 * (1.0 - (i / max(1, n - 1))))
-        score *= pos_boost
+        # Avoid over-focusing on the very beginning (often dominated by Abstract).
+        # Keep this mild so relevance still dominates.
+        if n >= 25:
+            if i < int(n * 0.15):
+                score *= 0.92
+            elif i > int(n * 0.75):
+                score *= 1.06
 
         scores.append((i, score))
         vectors.append(vec)

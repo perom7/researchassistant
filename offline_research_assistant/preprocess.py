@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
+from .text_utils import fix_split_leading_words
+
 
 @dataclass(frozen=True)
 class PreprocessOptions:
@@ -109,5 +111,8 @@ def preprocess_pages(pages: Sequence[str], opts: PreprocessOptions) -> Tuple[str
     processed = _dehyphenate(processed)
     if opts.strip_citations:
         processed = _strip_citations(processed)
+
+    # Fix common PDF-extraction artifact: split first letter at sentence starts (e.g., 'T HE').
+    processed = fix_split_leading_words(processed)
 
     return processed, raw

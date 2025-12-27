@@ -88,6 +88,91 @@ def _allocate_sentences(
     return alloc
 
 
+def _rebalance_for_paper_structure(alloc: Dict[str, int], *, total_sentences: int) -> Dict[str, int]:
+    """Heuristics to avoid summaries dominated by Abstract.
+
+    Research-paper PDFs often have an Abstract that is easy to score highly, which can
+    lead to summaries that feel like they're only based on Abstract. This function
+    caps Abstract and guarantees some coverage of later sections when present.
+    """
+
+    if not alloc:
+        return alloc
+
+    # Only apply if we actually have multiple sections.
+    if len(alloc) <= 1:
+        return alloc
+
+    total_sentences = max(1, int(total_sentences))
+
+    # Cap Abstract to at most ~25% of requested sentences (but at least 1 if present).
+    abs_key = None
+    for k in alloc.keys():
+        if k.strip().lower() == "abstract":
+            abs_key = k
+            break
+
+    if abs_key is not None and total_sentences >= 6:
+        cap = max(1, int(round(total_sentences * 0.25)))
+        if alloc.get(abs_key, 0) > cap:
+            freed = alloc[abs_key] - cap
+            alloc[abs_key] = cap
+
+            # Prefer distributing to later sections if they exist.
+            preferred = [
+                "results",
+                "discussion",
+                "conclusion",
+                "experiments",
+                "method",
+                "methodology",
+                "introduction",
+            ]
+            keys_by_pref: List[str] = []
+            for p in preferred:
+                for k in alloc.keys():
+                    if k.strip().lower() == p and k not in keys_by_pref:
+                        keys_by_pref.append(k)
+            for k in alloc.keys():
+                if k != abs_key and k not in keys_by_pref:
+                    keys_by_pref.append(k)
+
+            idx = 0
+            while freed > 0 and keys_by_pref:
+                alloc[keys_by_pref[idx % len(keys_by_pref)]] += 1
+                freed -= 1
+                idx += 1
+
+    # Guarantee at least 1 sentence from key sections (if present) when budget allows.
+    must_have = ["method", "results", "conclusion"]
+    present = []
+    for m in must_have:
+        for k in alloc.keys():
+            if k.strip().lower() == m:
+                present.append(k)
+                break
+
+    if present and total_sentences >= (1 + len(present)):
+        for k in present:
+            alloc[k] = max(1, alloc.get(k, 0))
+
+        # If we exceeded total, trim from the largest non-must-have sections first.
+        while sum(alloc.values()) > total_sentences:
+            candidates = sorted(alloc.items(), key=lambda x: x[1], reverse=True)
+            changed = False
+            for k, v in candidates:
+                if k in present:
+                    continue
+                if v > 1:
+                    alloc[k] = v - 1
+                    changed = True
+                    break
+            if not changed:
+                break
+
+    return alloc
+
+
 def summarize_by_sections(
     text: str,
     total_sentences: int,
@@ -115,6 +200,7 @@ def summarize_by_sections(
         section_words.append((name, wc))
 
     alloc = _allocate_sentences(section_words, total_sentences, max_sentences_per_section)
+    alloc = _rebalance_for_paper_structure(alloc, total_sentences=int(total_sentences))
 
     summaries: List[SectionSummary] = []
     sentence_rows: List[Dict[str, Any]] = []

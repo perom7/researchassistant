@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -9,7 +10,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
-from .text_utils import split_sentences
+from .text_utils import fix_split_leading_words, split_sentences
 
 
 THEMES: Dict[str, Dict[str, object]] = {
@@ -112,7 +113,9 @@ def _normalize_bullets(lines: Sequence[str]) -> List[str]:
         if not t:
             continue
         # remove any leading bullet chars to avoid duplicates
+        t = re.sub(r"^\s*(?:[-*•·●▪▫►‣⁃]|\uf0b7|\uf0a7)+\s+", "", t)
         t = t.lstrip("-•* ")
+        t = fix_split_leading_words(t)
         out.append(t)
     return out
 
